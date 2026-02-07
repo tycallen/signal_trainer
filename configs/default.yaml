@@ -1,0 +1,29 @@
+signal_file: /Users/allen/workspace/python/stock/vector_tushare/exports/shaofu_20040101_20260205.csv
+db_path: null  # null 则读 DB_PATH 环境变量
+
+label:
+  type: next_day_return
+  threshold: 0.0
+
+feature:
+  mode: tabular
+  lookback: 30
+  adj: qfq
+  extractors:
+    - technical
+    - money_flow
+
+split:
+  method: time_based
+  train_end: "20250630"
+
+model:
+  type: lgbm
+  params:
+    num_leaves: 31
+    learning_rate: 0.05
+    n_estimators: 500
+
+cache:
+  enabled: true
+  dir: cache/

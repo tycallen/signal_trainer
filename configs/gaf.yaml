@@ -1,0 +1,29 @@
+signal_file: /Users/allen/workspace/python/stock/vector_tushare/exports/shaofu_20040101_20260205.csv
+db_path: null
+
+label:
+  type: max_return_n_days
+  threshold: 0.05   # 仅用于评估时的分类统计, 不影响回归标签
+  n: 5              # 5 个交易日窗口
+
+feature:
+  mode: image
+  lookback: 120
+  adj: qfq
+
+split:
+  method: random
+  test_ratio: 0.2
+
+model:
+  type: cnn
+  params:
+    in_channels: 10
+    epochs: 100
+    batch_size: 64
+    lr: 0.001
+    weight_decay: 0.001
+
+cache:
+  enabled: true
+  dir: cache/
