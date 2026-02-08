@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -211,8 +212,7 @@ class Pipeline:
         return signals
 
     def _compute_labels(self, signals: pd.DataFrame) -> pd.Series | pd.DataFrame:
-        labeler = create_labeler(self.config.label)
-        labels = labeler.compute(signals, self.reader)
+        labels = self._load_or_compute_labels(signals)
 
         if isinstance(labels, pd.DataFrame):
             # 多目标 (e.g., RiskReturnLabeler)
@@ -240,6 +240,41 @@ class Pipeline:
                 n_above = (valid_labels > t).sum()
                 logger.info(f"  > {t:.0%}: {n_above} ({n_above / max(n_valid, 1):.1%})")
             return labels
+
+    def _load_or_compute_labels(self, signals: pd.DataFrame) -> pd.Series | pd.DataFrame:
+        """带 parquet 缓存的标签计算"""
+        cache_path = self._label_cache_path()
+
+        if self.config.cache.enabled and cache_path.exists():
+            cached = pd.read_parquet(cache_path)
+            # 校验行数与 signals 一致
+            if len(cached) == len(signals):
+                logger.info(f"Loaded cached labels from {cache_path}")
+                if cached.shape[1] == 1:
+                    return cached.iloc[:, 0]
+                return cached
+
+            logger.info(
+                f"Label cache size mismatch ({len(cached)} vs {len(signals)}), recomputing"
+            )
+
+        labeler = create_labeler(self.config.label)
+        labels = labeler.compute(signals, self.reader)
+
+        if self.config.cache.enabled:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(labels, pd.DataFrame):
+                labels.to_parquet(cache_path, index=False)
+            else:
+                labels.to_frame().to_parquet(cache_path, index=False)
+            logger.info(f"Saved label cache to {cache_path}")
+
+        return labels
+
+    def _label_cache_path(self) -> Path:
+        stem = self.config.signal_file_stem
+        label_hash = self.config.label.config_hash()
+        return Path(self.config.cache.dir) / "labels" / f"{stem}_{label_hash}.parquet"
 
     def _log_split(self, split):
         train_pos = (split.y_train == 1.0).sum()

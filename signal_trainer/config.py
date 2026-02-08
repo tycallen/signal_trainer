@@ -14,6 +14,10 @@ class LabelConfig(BaseModel):
     # 扩展字段
     n: int = 1  # 用于 T+N 类标签
 
+    def config_hash(self) -> str:
+        key = f"{self.type}_{self.threshold}_{self.n}"
+        return hashlib.md5(key.encode()).hexdigest()[:8]
+
 
 class FeatureConfig(BaseModel):
     mode: str = "tabular"  # tabular | image

@@ -179,7 +179,14 @@ class MultiScaleGAFResNet(nn.Module):
         scales: list of n_scales tensors, each (B, C, H_i, H_i)
         returns: (B, n_targets) or (B,)
         """
-        features = [self._encode(x) for x in scales]
+        # Resize all scales to the largest spatial size
+        max_size = max(x.shape[-1] for x in scales)
+        aligned = [
+            nn.functional.interpolate(x, size=max_size, mode="bilinear", align_corners=False)
+            if x.shape[-1] != max_size else x
+            for x in scales
+        ]
+        features = [self._encode(x) for x in aligned]
         fused = torch.cat(features, dim=1)  # (B, 512 * n_scales)
         out = self.regressor(fused)
         if self.n_targets == 1:
