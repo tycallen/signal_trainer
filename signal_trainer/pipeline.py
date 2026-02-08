@@ -100,19 +100,24 @@ class Pipeline:
 
     def _run_image(self) -> dict:
         """GAF 图像 pipeline (懒加载, 不全量载入内存)"""
-        from .features.gaf import GAFStore
+        from .features.gaf import GAFStore, MultiScaleGAFStore
 
         t_start = time.time()
+        multi_scale = self.config.feature.is_multi_scale
 
         # 1. 加载信号
         signals = self._load_signals()
 
         # 2. 生成 GAF 张量 (存为单个 .pt 文件)
         t = time.time()
-        gaf_store = GAFStore(self.config, self.reader)
+        if multi_scale:
+            gaf_store = MultiScaleGAFStore(self.config, self.reader)
+        else:
+            gaf_store = GAFStore(self.config, self.reader)
         path_dict = gaf_store.extract_paths(signals)
         logger.info(
-            f"[2/6] GAF tensors: {len(path_dict)}/{len(signals)} available, "
+            f"[2/6] GAF tensors: {len(path_dict)}/{len(signals)} available"
+            f"{' (multi-scale)' if multi_scale else ''}, "
             f"took {_fmt_duration(time.time() - t)}"
         )
 
@@ -122,10 +127,17 @@ class Pipeline:
         logger.info(f"  Label computation took {_fmt_duration(time.time() - t)}")
 
         # 4. 过滤: 只保留同时有 GAF 和标签的样本
-        valid_indices = [
-            idx for idx in range(len(signals))
-            if idx in path_dict and pd.notna(labels.iloc[idx])
-        ]
+        multi_target = isinstance(labels, pd.DataFrame)
+        if multi_target:
+            valid_indices = [
+                idx for idx in range(len(signals))
+                if idx in path_dict and labels.iloc[idx].notna().all()
+            ]
+        else:
+            valid_indices = [
+                idx for idx in range(len(signals))
+                if idx in path_dict and pd.notna(labels.iloc[idx])
+            ]
         logger.info(
             f"[4/6] Valid samples: {len(valid_indices)} "
             f"(dropped {len(signals) - len(valid_indices)})"
@@ -133,18 +145,32 @@ class Pipeline:
 
         valid_signals = signals.iloc[valid_indices].reset_index(drop=True)
         valid_paths = [path_dict[i] for i in valid_indices]
-        valid_labels = [float(labels.iloc[i]) for i in valid_indices]
 
-        vl_arr = np.array(valid_labels)
-        logger.info(
-            f"  Label stats: mean={vl_arr.mean():.4f} median={np.median(vl_arr):.4f} "
-            f"std={vl_arr.std():.4f}"
-        )
+        if multi_target:
+            valid_labels = [labels.iloc[i].tolist() for i in valid_indices]
+            vl_arr = np.array(valid_labels)
+            for ci, col in enumerate(labels.columns):
+                logger.info(
+                    f"  {col}: mean={vl_arr[:, ci].mean():.4f} "
+                    f"median={np.median(vl_arr[:, ci]):.4f} "
+                    f"std={vl_arr[:, ci].std():.4f}"
+                )
+        else:
+            valid_labels = [float(labels.iloc[i]) for i in valid_indices]
+            vl_arr = np.array(valid_labels)
+            logger.info(
+                f"  Label stats: mean={vl_arr.mean():.4f} median={np.median(vl_arr):.4f} "
+                f"std={vl_arr.std():.4f}"
+            )
 
         # 5. 划分
         splitter = create_splitter(self.config.split)
         indices = list(range(len(valid_labels)))
-        labels_series = pd.Series(valid_labels)
+        # splitter 需要 Series, 用第一列或唯一标签
+        if multi_target:
+            labels_series = pd.Series(vl_arr[:, 0])
+        else:
+            labels_series = pd.Series(valid_labels)
 
         dummy_features = pd.DataFrame({"_idx": indices})
         split = splitter.split(dummy_features, labels_series, valid_signals)
@@ -184,22 +210,36 @@ class Pipeline:
         )
         return signals
 
-    def _compute_labels(self, signals: pd.DataFrame) -> pd.Series:
+    def _compute_labels(self, signals: pd.DataFrame) -> pd.Series | pd.DataFrame:
         labeler = create_labeler(self.config.label)
         labels = labeler.compute(signals, self.reader)
-        n_valid = labels.notna().sum()
-        valid_labels = labels.dropna()
-        logger.info(
-            f"[3/6] Labels: {n_valid} valid, {labels.isna().sum()} missing | "
-            f"mean={valid_labels.mean():.4f} std={valid_labels.std():.4f} "
-            f"median={valid_labels.median():.4f} "
-            f"[{valid_labels.min():.4f}, {valid_labels.max():.4f}]"
-        )
-        # 按阈值统计分布
-        for t in [0.03, 0.05, 0.08, 0.10]:
-            n_above = (valid_labels > t).sum()
-            logger.info(f"  > {t:.0%}: {n_above} ({n_above / max(n_valid, 1):.1%})")
-        return labels
+
+        if isinstance(labels, pd.DataFrame):
+            # 多目标 (e.g., RiskReturnLabeler)
+            valid_mask = labels.notna().all(axis=1)
+            n_valid = valid_mask.sum()
+            n_missing = (~valid_mask).sum()
+            logger.info(f"[3/6] Labels ({labels.columns.tolist()}): {n_valid} valid, {n_missing} missing")
+            for col in labels.columns:
+                vals = labels.loc[valid_mask, col]
+                logger.info(
+                    f"  {col}: mean={vals.mean():.4f} std={vals.std():.4f} "
+                    f"median={vals.median():.4f} [{vals.min():.4f}, {vals.max():.4f}]"
+                )
+            return labels
+        else:
+            n_valid = labels.notna().sum()
+            valid_labels = labels.dropna()
+            logger.info(
+                f"[3/6] Labels: {n_valid} valid, {labels.isna().sum()} missing | "
+                f"mean={valid_labels.mean():.4f} std={valid_labels.std():.4f} "
+                f"median={valid_labels.median():.4f} "
+                f"[{valid_labels.min():.4f}, {valid_labels.max():.4f}]"
+            )
+            for t in [0.03, 0.05, 0.08, 0.10]:
+                n_above = (valid_labels > t).sum()
+                logger.info(f"  > {t:.0%}: {n_above} ({n_above / max(n_valid, 1):.1%})")
+            return labels
 
     def _log_split(self, split):
         train_pos = (split.y_train == 1.0).sum()

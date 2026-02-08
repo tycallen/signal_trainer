@@ -1,0 +1,31 @@
+signal_file: /Users/allen/workspace/python/stock/vector_tushare/exports/shaofu_20040101_20260205.csv
+db_path: null
+
+label:
+  type: risk_return
+  threshold: 0.05
+  n: 5              # 5 个交易日窗口
+
+feature:
+  mode: image
+  lookback: 120
+  adj: qfq
+
+split:
+  method: random
+  test_ratio: 0.2
+
+model:
+  type: cnn
+  params:
+    in_channels: 10
+    n_targets: 2
+    target_names: ["max_return", "max_drawdown"]
+    epochs: 100
+    batch_size: 64
+    lr: 0.001
+    weight_decay: 0.001
+
+cache:
+  enabled: true
+  dir: cache/

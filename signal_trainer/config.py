@@ -17,13 +17,25 @@ class LabelConfig(BaseModel):
 
 class FeatureConfig(BaseModel):
     mode: str = "tabular"  # tabular | image
-    lookback: int = 30
+    lookback: int | list[int] = 30
     adj: str = "qfq"
     extractors: list[str] = Field(default_factory=lambda: ["technical", "money_flow"])
 
+    @property
+    def lookback_list(self) -> list[int]:
+        """始终返回 list 形式的 lookback"""
+        if isinstance(self.lookback, list):
+            return self.lookback
+        return [self.lookback]
+
+    @property
+    def is_multi_scale(self) -> bool:
+        return isinstance(self.lookback, list) and len(self.lookback) > 1
+
     def config_hash(self) -> str:
         """根据影响特征生成的参数计算 hash"""
-        key = f"{self.mode}_{self.lookback}_{self.adj}_{'_'.join(sorted(self.extractors))}"
+        lb = sorted(self.lookback) if isinstance(self.lookback, list) else self.lookback
+        key = f"{self.mode}_{lb}_{self.adj}_{'_'.join(sorted(self.extractors))}"
         return hashlib.md5(key.encode()).hexdigest()[:8]
 
 

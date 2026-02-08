@@ -77,10 +77,14 @@ def ohlcv_to_gaf_tensor(daily_df: pd.DataFrame, lookback: int) -> torch.Tensor |
 class GAFStore:
     """批量生成 GAF 张量, 按单个信号缓存为 .pt 文件"""
 
-    def __init__(self, config: Config, reader: DataReader):
+    def __init__(self, config: Config, reader: DataReader, lookback: int | None = None):
         self.config = config
         self.reader = reader
-        self.lookback = config.feature.lookback
+        # 允许外部指定 lookback (用于 MultiScaleGAFStore)
+        lb = lookback if lookback is not None else config.feature.lookback
+        if isinstance(lb, list):
+            lb = lb[0]
+        self.lookback = lb
         self.adj = config.feature.adj
         self.cache_dir = self._get_cache_dir()
 
@@ -218,3 +222,40 @@ class GAFStore:
         key = f"{self.config.signal_file_stem}_gaf_{self.lookback}_{self.adj}"
         h = hashlib.md5(key.encode()).hexdigest()[:8]
         return Path(self.config.cache.dir) / "gaf" / f"{self.config.signal_file_stem}_{h}"
+
+
+class MultiScaleGAFStore:
+    """多尺度 GAF: 对每个 lookback 创建独立的 GAFStore, 返回多路径"""
+
+    def __init__(self, config: Config, reader: DataReader):
+        self.config = config
+        self.scales = config.feature.lookback_list
+        self.stores = {
+            lb: GAFStore(config, reader, lookback=lb)
+            for lb in self.scales
+        }
+        logger.info(f"MultiScaleGAFStore: scales={self.scales}")
+
+    def extract_paths(self, signals: pd.DataFrame) -> dict[int, list[Path]]:
+        """
+        返回 {signal_index: [path_30, path_60, path_120]} 字典.
+        只保留所有尺度都有数据的信号.
+        """
+        per_scale: dict[int, dict[int, Path]] = {}
+        for lb in self.scales:
+            per_scale[lb] = self.stores[lb].extract_paths(signals)
+
+        # 取交集: 每个 scale 都有的 signal index
+        common_indices = set.intersection(
+            *(set(d.keys()) for d in per_scale.values())
+        )
+
+        result: dict[int, list[Path]] = {}
+        for idx in sorted(common_indices):
+            result[idx] = [per_scale[lb][idx] for lb in self.scales]
+
+        logger.info(
+            f"MultiScaleGAFStore: {len(result)}/{len(signals)} signals "
+            f"have all {len(self.scales)} scales"
+        )
+        return result
